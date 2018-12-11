@@ -1,0 +1,368 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Dec  9 17:11:23 2018
+
+@author: Administrator
+"""
+
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+from sklearn.model_selection import StratifiedKFold
+from datetime import datetime
+import time
+import warnings
+from sklearn.preprocessing import LabelEncoder
+
+def tpr_weight_funtion(y_true,y_predict):
+    """
+    评价指标函数：在FPR较低时的TPR加权平均值
+    """
+    d = pd.DataFrame()
+    d['prob'] = list(y_predict)
+    d['y'] = list(y_true)
+    d = d.sort_values(['prob'], ascending=[0])
+    y = d.y
+    PosAll = pd.Series(y).value_counts()[1]
+    NegAll = pd.Series(y).value_counts()[0]
+    pCumsum = d['y'].cumsum()
+    nCumsum = np.arange(len(y)) - pCumsum + 1
+    pCumsumPer = pCumsum / PosAll
+    nCumsumPer = nCumsum / NegAll
+    TR1 = pCumsumPer[abs(nCumsumPer-0.001).idxmin()]
+    TR2 = pCumsumPer[abs(nCumsumPer-0.005).idxmin()]
+    TR3 = pCumsumPer[abs(nCumsumPer-0.01).idxmin()]
+    return 'TC_AUC',0.4 * TR1 + 0.3 * TR2 + 0.3 * TR3,True
+
+
+def get_feature1(op,trans,label):
+    for feature in op.columns[:]:
+        if feature not in ['day']:
+            if feature != 'UID':
+                label = label.merge(op.groupby(['UID'])[feature].count().reset_index(),on='UID',how='left')
+                label =label.merge(op.groupby(['UID'])[feature].nunique().reset_index(),on='UID',how='left')
+            for deliver in ['ip1','mac1','mac2','geo_code']:
+                if feature not in deliver:
+                    if feature != 'UID':
+                        temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].count().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                        temp = temp.groupby('UID')[feature].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+                        temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].nunique().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                        temp = temp.groupby('UID')[feature].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+                    else:
+                        temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].count().reset_index(),on=deliver,how='left')[['UID_x','UID_y']] 
+                        temp = temp.groupby('UID_x')['UID_y'].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+                        temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].nunique().reset_index(),on=deliver,how='left')[['UID_x','UID_y']] 
+                        temp = temp.groupby('UID_x')['UID_y'].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+
+        else:
+            print(feature)
+            label =label.merge(op.groupby(['UID'])[feature].count().reset_index(),on='UID',how='left')
+            label =label.merge(op.groupby(['UID'])[feature].nunique().reset_index(),on='UID',how='left')
+            label =label.merge(op.groupby(['UID'])[feature].max().reset_index(),on='UID',how='left')
+            label =label.merge(op.groupby(['UID'])[feature].min().reset_index(),on='UID',how='left')
+            label =label.merge(op.groupby(['UID'])[feature].sum().reset_index(),on='UID',how='left')
+            label =label.merge(op.groupby(['UID'])[feature].mean().reset_index(),on='UID',how='left')
+            label =label.merge(op.groupby(['UID'])[feature].std().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].median().reset_index(),on='UID',how='left')
+            for deliver in ['ip1','mac1','mac2']:
+                if feature not in deliver:
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].count().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].sum().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].nunique().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].sum().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].max().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].min().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].sum().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].mean().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].std().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = op[['UID',deliver]].merge(op.groupby([deliver])[feature].median().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp                    
+                    
+    for feature in trans.columns[1:]:
+        if feature not in ['trans_amt','bal','day']:
+            if feature != 'UID':
+                label =label.merge(trans.groupby(['UID'])[feature].count().reset_index(),on='UID',how='left')
+                label =label.merge(trans.groupby(['UID'])[feature].nunique().reset_index(),on='UID',how='left')
+            for deliver in ['merchant','ip1','mac1','geo_code',]:
+                if feature not in deliver: 
+                    if feature != 'UID':
+                        temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].count().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                        temp = temp.groupby('UID')[feature].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+                        temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].nunique().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                        temp = temp.groupby('UID')[feature].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+                    else:
+                        temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].count().reset_index(),on=deliver,how='left')[['UID_x','UID_y']] 
+                        temp = temp.groupby('UID_x')['UID_y'].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+                        temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].nunique().reset_index(),on=deliver,how='left')[['UID_x','UID_y']] 
+                        temp = temp.groupby('UID_x')['UID_y'].sum().reset_index()
+                        temp.columns = ['UID',feature+deliver]
+                        label =label.merge(temp,on='UID',how='left')
+                        del temp
+            #if feature in ['merchant','code2','acc_id1','market_code','market_code']:
+            #    label[feature+'_z'] = 0 
+            #    label[feature+'_z'] = label[feature+'_y']/label[feature+'_x']
+        else:
+            print(feature)
+            label =label.merge(trans.groupby(['UID'])[feature].count().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].nunique().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].max().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].min().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].sum().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].mean().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].std().reset_index(),on='UID',how='left')
+            label =label.merge(trans.groupby(['UID'])[feature].median().reset_index(),on='UID',how='left')
+            for deliver in ['merchant','ip1','mac1']:
+                if feature not in deliver:
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].count().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].sum().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].nunique().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].sum().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].max().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].min().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].sum().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].mean().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].std().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp
+                    temp = trans[['UID',deliver]].merge(trans.groupby([deliver])[feature].median().reset_index(),on=deliver,how='left')[['UID',feature]] 
+                    temp = temp.groupby('UID')[feature].mean().reset_index()
+                    temp.columns = ['UID',feature+deliver]
+                    label =label.merge(temp,on='UID',how='left')
+                    del temp                    
+                    
+    print("Done")
+    return label
+
+def get_feature2(df_trans,df_tag):   
+    """
+    交易资金类型
+    """
+    df_tag = df_tag.drop(['Tag'], axis=1)
+    trans_amt_src1 = dict(df_trans['amt_src1'].value_counts()).keys()
+    trans_amt_src1 = list(trans_amt_src1)
+    trans_amt_src1.sort()
+    index = range(len(trans_amt_src1)) #range(0, 28) 
+    ver_index = dict(zip(trans_amt_src1, index))  
+    df_tag_uids = df_tag['UID']  
+    uid_trans = df_trans[df_trans['UID'].isin(df_tag_uids)]
+    all_vers = []
+    for uid in df_tag_uids:
+        ver_arr = []
+        ver = dict(uid_trans[uid_trans['UID'] == uid]['amt_src1'].value_counts())
+        for key, value in ver.items(): 
+            index = ver_index[key]
+            ver_arr.append(index)
+        if not ver_arr: 
+            ver_arr=[28]
+        all_vers.append(max(ver_arr))
+    df_tag['trans_amt_src1'] = all_vers
+
+    return df_tag
+
+def get_feature3(data,tag,feature):
+    tag = tag.drop(['Tag'], axis=1)
+    for fea in feature:
+        data[fea] = data[fea].fillna('abc') #缺失值填充
+        data[fea] = LabelEncoder().fit_transform(data[fea])
+        data_cnt = data.groupby('UID')[fea].value_counts()
+        data_cnt = dict(data_cnt)
+        cnt = []
+        mode = []
+        df_tag_uids = tag['UID']      
+        for uid in df_tag_uids:
+#            print(len(cnt))
+            n = 0
+            for key,value in data_cnt.items():
+                n += 1
+                if key[0]==uid:
+                    cnt.append(value)
+                    mode.append(key[1])
+                    break 
+                if n == len(data_cnt.items()):
+                    cnt.append(-1)
+                    mode.append(-1)
+    #        tag['tr_'+fea+'_cnt'] = cnt
+        tag['tr_'+fea+'_mode'] = mode
+        print('One feature completed！')
+    return tag
+
+if __name__ == '__main__':
+    
+    warnings.filterwarnings("ignore")
+    start_time = datetime.strptime(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())), '%Y-%m-%d %H:%M:%S')
+    print('start time :', start_time)
+    
+    #读取原始数据
+    path = 'F:/GDUT/ML/competition/Sweet Orange Financial/'
+    '''训练数据 ''' 
+    op_train = pd.read_csv(path+'data/operation_train_new.csv')
+    trans_train = pd.read_csv(path+'data/transaction_train_new.csv')
+    y = pd.read_csv(path+'data/tag_train_new.csv')
+    '''复赛测试数据 '''
+    op_test = pd.read_csv(path+'data/test_operation_round2.csv')
+    trans_test = pd.read_csv(path+'data/test_transaction_round2.csv')
+    sub = pd.read_csv(path+'data/submit_example.csv')
+    print('read CSV success!')
+    
+#    #提取特征
+#    train1 = get_feature1(op_train,trans_train,y).fillna(-1)
+#    test1 = get_feature1(op_test,trans_test,sub).fillna(-1)
+#    print('get_feature1 success!')
+#    
+#    train2 = get_feature2(trans_train, y)
+#    test2 = get_feature2(trans_test, sub)
+#    print('get_feature2 success!')
+#    
+#    train3 = get_feature3(trans_train,y,['merchant','geo_code'])
+#    test3 = get_feature3(trans_test,sub,['merchant','geo_code'])
+#    print('get_feature3 success!')
+#    
+#    #拼接
+#    train = train1.merge(train2, on='UID', how='left')
+#    test = test1.merge(test2, on='UID', how='left')
+#    
+#    train = train.merge(train3, on='UID', how='left')
+#    test = test.merge(test3, on='UID', how='left')
+#    print('拼接成功!')
+    
+   
+    #存储训练集和测试集，方便下次训练模型直接读取
+#    train.to_csv(path+'ky_train.csv', index=False)
+#    test.to_csv(path+'ky_test.csv', index=False)
+    
+    #直接读取训练集和测试集进行训练
+    train = pd.read_csv(path+'re_train.csv')
+    test = pd.read_csv(path+'re_test.csv')
+    train = train.drop(train.columns[-14:], axis=1)
+    test = test.drop(test.columns[-14:], axis=1)
+    
+    train = train.drop(['Tag'],axis = 1).fillna(-1)
+    label = y['Tag']
+    print('特征维数：%d' % train.shape[1])
+    test_id = test['UID']
+    test = test.drop(['Tag'],axis = 1).fillna(-1)
+
+    #模型参数
+    lgb_model = lgb.LGBMClassifier(boosting_type='gbdt', 
+                                   num_leaves=100, 
+                                   reg_alpha=3, 
+                                   reg_lambda=5, 
+                                   max_depth=-1,
+                                   n_estimators=5000, 
+                                   objective='binary', 
+                                   subsample=0.9, 
+                                   colsample_bytree=0.77, 
+                                   subsample_freq=1, 
+                                   learning_rate=0.01,
+                                   random_state=1000, 
+                                   n_jobs=16, 
+                                   min_child_weight=4, 
+                                   min_child_samples=5, 
+                                   min_split_gain=0)
+    
+    skf = StratifiedKFold(n_splits=10, random_state=2017, shuffle=True)
+    best_score = []
+    
+    oof_preds = np.zeros(train.shape[0]) #31179
+    sub_preds = np.zeros(test_id.shape[0]) #31158
+    
+    #训练和预测
+    for index, (train_index, test_index) in enumerate(skf.split(train, label)):
+        lgb_model.fit(train.iloc[train_index], 
+                      label.iloc[train_index], 
+                      verbose=50,
+                      eval_set=[(train.iloc[train_index], label.iloc[train_index]),
+                                (train.iloc[test_index], label.iloc[test_index])], 
+                      early_stopping_rounds=50)
+        best_score.append(lgb_model.best_score_['valid_1']['binary_logloss'])
+        print(best_score)
+        oof_preds[test_index] = lgb_model.predict_proba(train.iloc[test_index], num_iteration=lgb_model.best_iteration_)[:,1]
+    
+        test_pred = lgb_model.predict_proba(test, num_iteration=lgb_model.best_iteration_)[:, 1]
+        sub_preds += test_pred / 10
+        #print('test mean:', test_pred.mean())
+        #predict_result['predicted_score'] = predict_result['predicted_score'] + test_pred
+    
+    m = tpr_weight_funtion(y_predict=oof_preds,y_true=label)
+    print(m[1])
+    sub['Tag'] = sub_preds
+    sub.to_csv(path+'output/sub_16.csv', index=False)
+                  
+    #程序运行时长
+    end_time = datetime.strptime(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())), '%Y-%m-%d %H:%M:%S')
+    run_time = end_time - start_time
+    print('Program success!','\nRun time:' ,run_time )
